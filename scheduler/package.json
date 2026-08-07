@@ -1,0 +1,10 @@
+{
+  "name": "brandos-scheduler",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Phase 0 scheduler skeleton: proves cron fires unattended and survives container restarts.",
+  "main": "index.js",
+  "dependencies": {
+    "node-cron": "^3.0.3"
+  }
+}
