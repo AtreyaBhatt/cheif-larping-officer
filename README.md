@@ -93,29 +93,68 @@ Each run's output is logged to `logs/digest_<timestamp>.log` in the
 project root (gitignored) so you have a record even though the `app`
 container exits immediately after each run rather than staying up.
 
-## Swapping in a real LLM (when ready)
+## Using a real LLM (OpenRouter)
 
-`brandos/digest.py` has a `DigestGenerator` interface and a
-`get_generator()` factory function. To add Claude or OpenAI:
+`brandos/digest.py` now includes `OpenRouterDigestGenerator`, wired up
+and tested. It pre-filters articles by HN score first (same as the stub),
+then sends only the survivors to the LLM to write real headlines,
+summaries, categories, quality scores, and LinkedIn/X angles — one API
+call per digest run, not per article.
 
-1. Add a new class implementing `DigestGenerator.generate()`
-2. Point `get_generator()` at it (env-var gated, e.g. `LLM_PROVIDER=claude`)
-3. Nothing else in the pipeline changes — `run_digest.py`, `db.py`, and
-   `delivery.py` don't know or care which generator is active.
+To turn it on:
 
-## Swapping in real WhatsApp delivery (when ready)
+1. Get an API key at https://openrouter.ai/keys
+2. In `.env`, set:
+   ```
+   LLM_PROVIDER=openrouter
+   OPENROUTER_API_KEY=sk-or-...
+   ```
+3. Optional — override the model (defaults to the free Nemotron 3 Ultra
+   tier if unset):
+   ```
+   OPENROUTER_MODEL=nvidia/nemotron-3-ultra-550b-a55b:free
+   ```
+4. Run it:
+   ```bash
+   docker compose run --rm app python -m brandos.run_digest --dry-run
+   ```
+   Check the output actually reads like real content ideas (not
+   `[STUB]` placeholders) before removing `--dry-run` and letting it
+   write to the DB.
 
-`brandos/delivery.py` already has `TwilioWhatsAppDelivery` implemented,
-just not active by default. To turn it on:
+Swapping to a different provider later (Claude direct, OpenAI direct,
+a different OpenRouter model) means adding a new class implementing
+`DigestGenerator.generate()` and pointing `get_generator()` at it via
+`LLM_PROVIDER` — nothing else in the pipeline changes.
+
+## Using real WhatsApp delivery (Twilio)
+
+`brandos/delivery.py` has `TwilioWhatsAppDelivery`, wired up and tested.
+
+To turn it on:
 
 1. Sign up for Twilio, activate the WhatsApp sandbox (free):
    https://www.twilio.com/docs/whatsapp/sandbox
-2. Fill in `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`,
-   `TWILIO_WHATSAPP_FROM`, `TWILIO_WHATSAPP_TO` in `.env`
-3. Set `DELIVERY_PROVIDER=twilio` in `.env`
-4. Note: Twilio's free sandbox requires re-joining every 72 hours by
-   texting the join code from your phone. Fine for now; revisit if this
-   becomes annoying (paid Twilio sender, or Meta's Cloud API directly).
+2. From your phone, send the sandbox's join code to their WhatsApp
+   number to opt your own number in (required by Twilio, not this app)
+3. In `.env`, set:
+   ```
+   DELIVERY_PROVIDER=twilio
+   TWILIO_ACCOUNT_SID=AC...
+   TWILIO_AUTH_TOKEN=...
+   TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
+   TWILIO_WHATSAPP_TO=whatsapp:+91XXXXXXXXXX
+   ```
+   (`TWILIO_WHATSAPP_FROM` is Twilio's shared sandbox number, same for
+   everyone in sandbox mode; `TWILIO_WHATSAPP_TO` is your own number)
+4. Run it and check your phone:
+   ```bash
+   docker compose run --rm app python -m brandos.run_digest
+   ```
+
+Note: Twilio's free sandbox requires re-joining every 72 hours by
+texting the join code again. Fine for now; revisit if this becomes
+annoying (paid Twilio sender, or Meta's Cloud API directly).
 
 ## What's NOT built yet (later phases)
 
