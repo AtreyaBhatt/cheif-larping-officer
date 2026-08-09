@@ -1,0 +1,38 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: brandos_db
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    ports:
+      # Published to host only for local debugging (psql/GUI clients).
+      # Safe to remove once the app container talks to `db` internally.
+      - "${POSTGRES_PORT}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./db/migrations:/migrations:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  app:
+    build: ./app
+    container_name: brandos_app
+    env_file: .env
+    depends_on:
+      db:
+        condition: service_healthy
+    # No `restart` and no long-running process — this container is
+    # invoked on demand, either manually or via host cron. See
+    # scheduler/README.md for why this replaced the old always-on
+    # scheduler container.
+    profiles: ["manual"]  # prevents `docker compose up` from starting it as a daemon
+
+volumes:
+  pgdata:
