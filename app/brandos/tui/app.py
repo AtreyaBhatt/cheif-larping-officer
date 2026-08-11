@@ -216,7 +216,3 @@ class DigestApp(App):
         idea["status"] = status
         self._set_status(f"Marked '{idea['headline'][:40]}...' as {status}")
         self.load_ideas()  # simplest correct refresh; dataset is small
-
-
-if __name__ == "__main__":
-    DigestApp().run()
