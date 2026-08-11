@@ -2,10 +2,12 @@
 Phase 1 pipeline entrypoint: fetch -> generate -> store -> deliver.
 
 Run manually with:  python -m brandos.run_digest
-Called by the scheduler on the daily cron (see scheduler/index.js — Phase 1
-will point it at this script via `docker compose exec app python -m
-brandos.run_digest`, or the scheduler container gets a Python sibling;
-either way this function is the single entrypoint).
+Called daily by host cron via scripts/run_daily_digest.sh (see README).
+
+Delivery defaults to console/log output (see brandos/delivery.py) — the
+primary way to review and act on generated ideas is the TUI
+(python -m brandos.tui), which reads directly from the same
+content_ideas table this script writes to.
 """
 from __future__ import annotations
 

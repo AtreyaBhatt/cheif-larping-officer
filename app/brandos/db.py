@@ -88,6 +88,27 @@ def get_pending_ideas(limit: int = 20) -> list[dict]:
             return cur.fetchall()
 
 
+def get_recent_ideas(limit: int = 50) -> list[dict]:
+    """
+    All ideas regardless of status, most recent first. Used by the TUI to
+    show today's batch plus recent history in one view, not just what's
+    still pending a decision.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, created_at, headline, content, category,
+                       estimated_quality, reasoning, status, platform, notes
+                FROM content_ideas
+                ORDER BY created_at DESC
+                LIMIT %s;
+                """,
+                (limit,),
+            )
+            return cur.fetchall()
+
+
 def update_status(idea_id: str, status: str, platform: str | None = None) -> bool:
     """
     Used by the WhatsApp-reply logging flow (Phase 1 step 2): mark an

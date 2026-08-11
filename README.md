@@ -29,12 +29,15 @@ personal-brand-os/
     ├── requirements.txt
     ├── brandos/
     │   ├── sources/hackernews.py   # fetches HN top stories, no API key needed
-    │   ├── digest.py               # LLM abstraction; StubDigestGenerator ships by default
-    │   ├── delivery.py             # delivery abstraction; ConsoleDelivery ships by default
+    │   ├── digest.py               # LLM abstraction; stub + OpenRouter generators
+    │   ├── delivery.py             # delivery abstraction; console default, Twilio optional
     │   ├── db.py                   # Postgres read/write for content_ideas
-    │   └── run_digest.py           # entrypoint: fetch -> generate -> store -> deliver
+    │   ├── run_digest.py           # entrypoint: fetch -> generate -> store -> deliver
+    │   └── tui/
+    │       └── app.py              # Textual TUI: browse ideas, log decisions
     └── tests/
-        └── test_pipeline.py         # offline, mocked — no Docker required to run these
+        ├── test_pipeline.py         # offline, mocked — no Docker required to run these
+        └── test_tui.py              # headless Textual Pilot tests for the TUI
 ```
 
 ## Setup
@@ -127,9 +130,48 @@ a different OpenRouter model) means adding a new class implementing
 `DigestGenerator.generate()` and pointing `get_generator()` at it via
 `LLM_PROVIDER` — nothing else in the pipeline changes.
 
-## Using real WhatsApp delivery (Twilio)
+## Reviewing ideas with the TUI
 
-`brandos/delivery.py` has `TwilioWhatsAppDelivery`, wired up and tested.
+Push-based delivery (WhatsApp/Twilio) turned out to be more hassle than
+it's worth for a solo project — sandbox rejoin timers, Meta business
+verification, all overhead for "read a digest once a day." Instead,
+`brandos/tui/app.py` is a terminal UI (built with
+[Textual](https://textual.textualize.io/)) that reads directly from
+`content_ideas` — same table `run_digest.py` writes to, no delivery
+layer in between.
+
+Run it:
+```bash
+docker compose run --rm app python -m brandos.tui
+```
+
+Controls:
+- `j`/`k` or arrow keys — move through ideas
+- `1` — mark posted to LinkedIn
+- `2` — mark posted to X
+- `3` — mark posted to both
+- `s` — skip
+- `a` — archive
+- `r` — refresh from DB
+- `q` — quit
+
+The left pane lists recent ideas (any status, most recent first) with a
+status icon and relative date; the right pane shows the full content,
+category, quality score, and LLM reasoning for whatever's selected.
+Marking an idea calls `db.update_status()` immediately — same function
+the (now-optional) WhatsApp reply-logging flow would have used.
+
+This becomes your daily loop: run cron in the morning to populate the
+DB, then open the TUI whenever you actually have a few minutes to
+review and log decisions — no notification pressure, no push delivery
+account to maintain.
+
+## Optional: WhatsApp delivery (Twilio)
+
+Not the primary interface anymore (see TUI above), but still built and
+tested in `brandos/delivery.py` if you want push notifications on top
+of the TUI later — e.g. a ping that ideas are ready, even if you still
+log decisions in the TUI.
 
 To turn it on:
 
@@ -145,24 +187,18 @@ To turn it on:
    TWILIO_WHATSAPP_FROM=whatsapp:+14155238886
    TWILIO_WHATSAPP_TO=whatsapp:+91XXXXXXXXXX
    ```
-   (`TWILIO_WHATSAPP_FROM` is Twilio's shared sandbox number, same for
-   everyone in sandbox mode; `TWILIO_WHATSAPP_TO` is your own number)
 4. Run it and check your phone:
    ```bash
    docker compose run --rm app python -m brandos.run_digest
    ```
 
 Note: Twilio's free sandbox requires re-joining every 72 hours by
-texting the join code again. Fine for now; revisit if this becomes
-annoying (paid Twilio sender, or Meta's Cloud API directly).
+texting the join code again — one of the reasons the TUI became the
+primary path instead.
 
 ## What's NOT built yet (later phases)
 
-- Reply-based logging (marking ideas as posted via WhatsApp reply) —
-  this needs a webhook receiver, which is a bigger addition than
-  Phase 1's fetch/generate/store/deliver loop. Planned for a Phase 1.5
-  or folded into Phase 2 alongside the dashboard.
-- Dashboard (Phase 2)
+- Dashboard (Phase 2) — the TUI covers this need for now
 - Weekly review / writing coach / LARP score (Phase 3)
 
 ## Before considering Phase 1 done
@@ -171,6 +207,10 @@ annoying (paid Twilio sender, or Meta's Cloud API directly).
       cleanly against real HN data and writes rows to Postgres
 - [ ] Cron entry installed and confirmed to fire (check `logs/` the
       morning after installing it)
-- [ ] You've manually reviewed at least a few days of stub digests —
+- [ ] `docker compose run --rm app python -m brandos.tui` opens
+      cleanly, shows generated ideas, and marking one as posted/skipped
+      actually persists (confirm with a `psql` query afterward)
+- [ ] You've manually reviewed at least a few days of real digests —
       the *point* of Phase 1 is proving the loop runs unattended before
+
       spending money/complexity on a real LLM

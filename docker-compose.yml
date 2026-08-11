@@ -29,9 +29,9 @@ services:
       db:
         condition: service_healthy
     # No `restart` and no long-running process — this container is
-    # invoked on demand, either manually or via host cron. See
-    # scheduler/README.md for why this replaced the old always-on
-    # scheduler container.
+    # invoked on demand, either manually or via host cron (see
+    # scripts/run_daily_digest.sh) or interactively for the TUI
+    # (see README.md "Reviewing ideas with the TUI").
     profiles: ["manual"]  # prevents `docker compose up` from starting it as a daemon
 
 volumes:

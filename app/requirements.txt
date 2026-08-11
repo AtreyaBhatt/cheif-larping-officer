@@ -1,3 +1,4 @@
 requests==2.32.3
 psycopg[binary]==3.2.3
 twilio==9.3.7
+textual==8.2.8
