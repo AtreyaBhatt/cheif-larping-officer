@@ -34,10 +34,15 @@ personal-brand-os/
     │   ├── db.py                   # Postgres read/write for content_ideas
     │   ├── run_digest.py           # entrypoint: fetch -> generate -> store -> deliver
     │   └── tui/
-    │       └── app.py              # Textual TUI: browse ideas, log decisions
+    │       ├── __main__.py         # enables `python -m brandos.tui`
+    │       ├── app.py              # tabbed Textual app: Digest/Post Ideas/Projects/Posted
+    │       ├── views.py            # reusable IdeaBrowser widget (list + detail pane)
+    │       ├── larp_score.py       # LARP score calculation, pure logic, no Textual
+    │       └── larp_panel.py       # LARP score display widget
     └── tests/
         ├── test_pipeline.py         # offline, mocked — no Docker required to run these
-        └── test_tui.py              # headless Textual Pilot tests for the TUI
+        ├── test_tui.py              # headless Textual Pilot tests for the TUI
+        └── test_larp_score.py       # LARP score calculation unit tests
 ```
 
 ## Setup
@@ -135,7 +140,7 @@ a different OpenRouter model) means adding a new class implementing
 Push-based delivery (WhatsApp/Twilio) turned out to be more hassle than
 it's worth for a solo project — sandbox rejoin timers, Meta business
 verification, all overhead for "read a digest once a day." Instead,
-`brandos/tui/app.py` is a terminal UI (built with
+`brandos/tui/` is a terminal UI (built with
 [Textual](https://textual.textualize.io/)) that reads directly from
 `content_ideas` — same table `run_digest.py` writes to, no delivery
 layer in between.
@@ -145,21 +150,35 @@ Run it:
 docker compose run --rm app python -m brandos.tui
 ```
 
-Controls:
-- `j`/`k` or arrow keys — move through ideas
-- `1` — mark posted to LinkedIn
-- `2` — mark posted to X
-- `3` — mark posted to both
+### Tabs
+
+- **Digest** — today's freshly generated batch (`status = GENERATED`),
+  unreviewed
+- **Post Ideas** — generated, skipped, or archived short-form post ideas
+- **Projects** — placeholder for now. Longer-term project/research
+  ideas are a separate concept from daily post ideas and aren't wired
+  into the pipeline yet.
+- **Posted** — everything marked posted, filterable by platform (All /
+  LinkedIn / X), plus the **LARP Score** panel at the top — a synthetic
+  metric (not a real influence measure) combining posting consistency
+  (streaks), execution rate (posted ÷ generated), and category
+  diversity. See `brandos/tui/larp_score.py` for the full calculation.
+
+### Controls
+
+- `1` / `2` / `3` / `4` — switch to Digest / Post Ideas / Projects / Posted
+- `j`/`k` or arrow keys — move through the active tab's list
+- `p` — cycle the Posted tab's platform filter (All → LinkedIn → X)
+- `l` — mark selected idea posted to LinkedIn
+- `x` — mark selected idea posted to X
+- `b` — mark selected idea posted to both
 - `s` — skip
 - `a` — archive
-- `r` — refresh from DB
+- `r` — refresh all tabs from DB
 - `q` — quit
 
-The left pane lists recent ideas (any status, most recent first) with a
-status icon and relative date; the right pane shows the full content,
-category, quality score, and LLM reasoning for whatever's selected.
-Marking an idea calls `db.update_status()` immediately — same function
-the (now-optional) WhatsApp reply-logging flow would have used.
+Marking an idea calls `db.update_status()` immediately and reloads all
+tabs, so the Posted tab and LARP Score reflect the change right away.
 
 This becomes your daily loop: run cron in the morning to populate the
 DB, then open the TUI whenever you actually have a few minutes to
@@ -208,9 +227,12 @@ primary path instead.
 - [ ] Cron entry installed and confirmed to fire (check `logs/` the
       morning after installing it)
 - [ ] `docker compose run --rm app python -m brandos.tui` opens
-      cleanly, shows generated ideas, and marking one as posted/skipped
-      actually persists (confirm with a `psql` query afterward)
+      cleanly, shows generated ideas in the Digest tab, and marking one
+      as posted/skipped actually persists (confirm with a `psql` query
+      afterward)
+- [ ] Post a few ideas to different platforms and check the Posted tab
+      — platform filter (`p` key) should correctly show/hide LinkedIn vs
+      X posts, and the LARP Score panel should update with real numbers
 - [ ] You've manually reviewed at least a few days of real digests —
       the *point* of Phase 1 is proving the loop runs unattended before
-
       spending money/complexity on a real LLM

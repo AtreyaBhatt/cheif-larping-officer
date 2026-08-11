@@ -109,6 +109,51 @@ def get_recent_ideas(limit: int = 50) -> list[dict]:
             return cur.fetchall()
 
 
+def get_ideas_by_status(statuses: list[str], platform: str | None = None, limit: int = 100) -> list[dict]:
+    """
+    Ideas matching any of the given statuses, optionally filtered by
+    platform. Used by the tabbed TUI views:
+      - Digest tab:     statuses=['GENERATED']
+      - Post Ideas tab: statuses=['GENERATED', 'SKIPPED', 'ARCHIVED'] (reviewed, not yet posted, or set aside)
+      - Posted tab:     statuses=['POSTED_LINKEDIN', 'POSTED_X', 'POSTED_BOTH'], platform='LINKEDIN'|'X'|None
+
+    platform=None returns all platforms. When platform is given, it
+    matches POSTED_BOTH as well as the exact platform, since a "both"
+    post is relevant to both the LinkedIn and X views.
+    """
+    if not statuses:
+        return []
+
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            if platform:
+                cur.execute(
+                    """
+                    SELECT id, created_at, headline, content, category,
+                           estimated_quality, reasoning, status, platform, notes
+                    FROM content_ideas
+                    WHERE status = ANY(%s)
+                      AND (platform = %s OR platform = 'BOTH')
+                    ORDER BY created_at DESC
+                    LIMIT %s;
+                    """,
+                    (statuses, platform, limit),
+                )
+            else:
+                cur.execute(
+                    """
+                    SELECT id, created_at, headline, content, category,
+                           estimated_quality, reasoning, status, platform, notes
+                    FROM content_ideas
+                    WHERE status = ANY(%s)
+                    ORDER BY created_at DESC
+                    LIMIT %s;
+                    """,
+                    (statuses, limit),
+                )
+            return cur.fetchall()
+
+
 def update_status(idea_id: str, status: str, platform: str | None = None) -> bool:
     """
     Used by the WhatsApp-reply logging flow (Phase 1 step 2): mark an
