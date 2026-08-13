@@ -26,9 +26,23 @@ class ContentIdea:
     """
     Mirrors the content_ideas DB row shape (minus id/created_at/status/
     platform/notes, which are set at insert time, not generation time).
+
+    content: kept for backward compatibility with old rows/tests; new
+             code should read digest_summary / linkedin_post / x_post.
+    digest_summary: the informational summary shown in the Digest tab —
+                     what happened and why it matters, NOT meant to be
+                     posted as-is.
+    linkedin_post: full, platform-native, copy-pasteable LinkedIn post.
+    x_post: full, platform-native, copy-pasteable X post. May contain
+            multiple tweets joined by "\\n---\\n" if the idea warranted
+            a short thread (2-3 tweets); the TUI splits on that
+            separator for display.
     """
     headline: str
     content: str
+    digest_summary: str | None = None
+    linkedin_post: str | None = None
+    x_post: str | None = None
     source_articles: list[dict] = field(default_factory=list)
     category: str | None = None
     estimated_quality: float | None = None
@@ -59,14 +73,18 @@ class StubDigestGenerator(DigestGenerator):
         ideas: list[ContentIdea] = []
 
         for article in ranked[: self.max_ideas]:
+            summary = (
+                f"[STUB] No LLM configured yet. Raw article: "
+                f"\"{article.title}\" (score {article.score}, "
+                f"{article.num_comments} comments)."
+            )
             ideas.append(
                 ContentIdea(
                     headline=article.title,
-                    content=(
-                        f"[STUB] No LLM configured yet. Raw article: "
-                        f"\"{article.title}\" (score {article.score}, "
-                        f"{article.num_comments} comments)."
-                    ),
+                    content=summary,
+                    digest_summary=summary,
+                    linkedin_post="[STUB] No LLM configured — no LinkedIn post generated.",
+                    x_post="[STUB] No LLM configured — no X post generated.",
                     source_articles=[article.to_dict()],
                     category="uncategorized",
                     estimated_quality=None,
@@ -81,24 +99,48 @@ class StubDigestGenerator(DigestGenerator):
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_OPENROUTER_MODEL = "nvidia/nemotron-3-ultra-550b-a55b:free"
 
-SYSTEM_PROMPT = """You are a technical content strategist helping a software \
-professional turn AI/tech news into LinkedIn and X post ideas.
+SYSTEM_PROMPT = """You are a ghostwriter producing publish-ready social \
+media posts for a software professional's technical brand, based on AI/tech \
+news articles.
 
-For each article given, produce ONE content idea. Each idea must have:
-- headline: a short, punchy headline for the idea itself (not just the article title)
-- content: 2-4 sentences summarizing what happened and why it matters technically
+For each article given, produce ONE content package with these fields:
+
+- headline: a short, punchy internal label for this idea (not the article \
+title, not meant to be posted anywhere — just for organizing)
+
+- digest_summary: 2-4 sentences summarizing what happened and why it \
+matters technically. This is informational only, NOT meant to be posted \
+as-is — it's for the person's own morning reading.
+
+- linkedin_post: a COMPLETE, publish-ready LinkedIn post, written in first \
+person as the author's own take (not "here's an article about X" but an \
+actual opinion/insight). Structure: a strong hook line, 2-4 short \
+paragraphs of substance, optionally a closing question to invite \
+discussion. Roughly 100-200 words. This must be copy-pasteable exactly as \
+written — no placeholders, no brackets, no "[your take here]".
+
+- x_post: a COMPLETE, publish-ready X/Twitter post or short thread, \
+written in the same first-person voice. If the idea fits in one post, \
+write ONE string under 280 characters. If it genuinely needs more room \
+(2-3 tweets), write each tweet separated by the literal string "\\n---\\n" \
+between tweets, with EACH individual tweet under 280 characters on its \
+own. Do not number the tweets yourself (no "1/3") — that's added \
+automatically. Prefer a single tweet unless the idea truly needs a thread.
+
 - category: one of AI, LLMs, Startups, Open Source, Python, Rust, Linux, \
 Infrastructure, System Design, Machine Learning, Agents, Developer Tools, \
 Research, Business, or "other" if none fit
-- estimated_quality: a float 0.0-10.0 rating how strong this is as a post idea \
-(originality, technical depth, discussion potential)
+
+- estimated_quality: a float 0.0-10.0 rating how strong this is as a post \
+idea (originality, technical depth, discussion potential)
+
 - reasoning: one sentence on why you rated it that way
-- linkedin_angle: a specific angle/hook for a LinkedIn post
-- x_angle: a specific angle/hook for a shorter X/Twitter post
 
 Respond with ONLY a JSON array of objects with exactly these fields:
-headline, content, category, estimated_quality, reasoning, linkedin_angle, x_angle.
+headline, digest_summary, linkedin_post, x_post, category, estimated_quality, reasoning.
 No markdown fences, no preamble, no explanation outside the JSON."""
+
+X_CHAR_LIMIT = 280
 
 
 class OpenRouterDigestGenerator(DigestGenerator):
@@ -201,16 +243,17 @@ class OpenRouterDigestGenerator(DigestGenerator):
 
             source_article = filtered[i].to_dict()
 
-            content_parts = [item.get("content", "").strip()]
-            if item.get("linkedin_angle"):
-                content_parts.append(f"\nLinkedIn angle: {item['linkedin_angle']}")
-            if item.get("x_angle"):
-                content_parts.append(f"X angle: {item['x_angle']}")
+            digest_summary = item.get("digest_summary", "").strip()
+            linkedin_post = item.get("linkedin_post", "").strip()
+            x_post = self._validate_x_post(item.get("x_post", ""), headline=item.get("headline", filtered[i].title))
 
             ideas.append(
                 ContentIdea(
                     headline=item.get("headline", filtered[i].title),
-                    content="\n".join(content_parts).strip(),
+                    content=digest_summary,  # backward-compat mirror
+                    digest_summary=digest_summary,
+                    linkedin_post=linkedin_post,
+                    x_post=x_post,
                     source_articles=[source_article],
                     category=item.get("category", "other"),
                     estimated_quality=_safe_float(item.get("estimated_quality")),
@@ -220,6 +263,29 @@ class OpenRouterDigestGenerator(DigestGenerator):
 
         logger.info("OpenRouterDigestGenerator produced %d ideas from %d articles (model=%s)", len(ideas), len(filtered), self.model)
         return ideas
+
+    @staticmethod
+    def _validate_x_post(x_post: str, headline: str) -> str:
+        """
+        LLMs are unreliable at exact character counting, so validate
+        each tweet in the (possibly multi-tweet) response and log a
+        warning if any segment exceeds X's limit — better to flag it
+        for manual trimming in the TUI than silently post something
+        that gets rejected or truncated on the actual platform.
+        """
+        x_post = x_post.strip()
+        if not x_post:
+            return x_post
+
+        segments = [s.strip() for s in x_post.split("\n---\n")]
+        for i, segment in enumerate(segments, start=1):
+            if len(segment) > X_CHAR_LIMIT:
+                logger.warning(
+                    "X post segment %d/%d for %r is %d chars, over the %d limit — "
+                    "will need manual trimming before posting",
+                    i, len(segments), headline, len(segment), X_CHAR_LIMIT,
+                )
+        return x_post
 
 
 def _safe_float(value) -> float | None:

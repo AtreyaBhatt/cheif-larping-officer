@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
-from textual.widgets import TabbedContent
+from textual.widgets import Button, TabbedContent
 
 from brandos.tui.app import DigestApp
 from brandos.tui.views import relative_day
@@ -21,6 +21,9 @@ def _fake_idea(id_, headline, status="GENERATED", category="AI", platform=None, 
         "created_at": datetime.now(timezone.utc) - timedelta(days=days_ago),
         "headline": headline,
         "content": f"Body for {headline}",
+        "digest_summary": f"Digest summary for {headline}",
+        "linkedin_post": f"LinkedIn post for {headline}",
+        "x_post": f"X post for {headline}",
         "category": category,
         "estimated_quality": 7.0,
         "reasoning": "test reasoning",
@@ -28,6 +31,26 @@ def _fake_idea(id_, headline, status="GENERATED", category="AI", platform=None, 
         "platform": platform,
         "notes": None,
     }
+
+
+def _fake_project(id_, title, status="IDEA", **overrides):
+    base = {
+        "id": id_,
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc),
+        "title": title,
+        "description": f"Description for {title}",
+        "status": status,
+        "github_url": None,
+        "demo_url": None,
+        "blog_url": None,
+        "category": "AI",
+        "source": "MANUAL",
+        "linked_idea_id": None,
+        "linked_idea_headline": None,
+    }
+    base.update(overrides)
+    return base
 
 
 class TestRelativeDay:
@@ -46,35 +69,38 @@ class TestRelativeDay:
 class TestTabNavigation:
     async def test_digest_tab_active_by_default(self):
         with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
-             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]):
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]):
             app = DigestApp()
             async with app.run_test() as pilot:
                 assert app.query_one(TabbedContent).active == "digest"
 
     @pytest.mark.parametrize("key,expected_tab", [
         ("1", "digest"),
-        ("2", "post_ideas"),
+        ("2", "posts"),
         ("3", "projects"),
         ("4", "posted"),
     ])
     async def test_number_keys_switch_tabs(self, key, expected_tab):
         with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
-             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]):
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]):
             app = DigestApp()
             async with app.run_test() as pilot:
                 await pilot.press(key)
                 await pilot.pause()
                 assert app.query_one(TabbedContent).active == expected_tab
 
-    async def test_projects_tab_shows_stub_message(self):
+    async def test_projects_tab_shows_empty_state_when_no_projects(self):
         with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
-             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]):
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]):
             app = DigestApp()
             async with app.run_test() as pilot:
                 await pilot.press("3")
                 await pilot.pause()
-                stub = app.query_one("#projects-stub")
-                assert "wired up yet" in str(stub.content)
+                content = app.query_one("#project-content")
+                assert "No projects yet" in str(content.content)
 
 
 class TestDigestTab:
@@ -82,12 +108,11 @@ class TestDigestTab:
         generated = [_fake_idea("g1", "Gen idea", status="GENERATED")]
 
         def fake_query(statuses, platform=None, limit=100):
-            if statuses == ["GENERATED"]:
-                return generated
-            return []
+            return generated if statuses == ["GENERATED"] else []
 
         with patch("brandos.tui.app.db.get_ideas_by_status", side_effect=fake_query), \
-             patch("brandos.tui.app.db.get_recent_ideas", return_value=generated):
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=generated), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]):
             app = DigestApp()
             async with app.run_test() as pilot:
                 headline = app.query_one("#digest-headline")
@@ -97,6 +122,7 @@ class TestDigestTab:
         generated = [_fake_idea("g1", "Gen idea", status="GENERATED")]
         with patch("brandos.tui.app.db.get_ideas_by_status", return_value=generated), \
              patch("brandos.tui.app.db.get_recent_ideas", return_value=generated), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]), \
              patch("brandos.tui.app.db.update_status", return_value=True) as mock_update:
             app = DigestApp()
             async with app.run_test() as pilot:
@@ -108,6 +134,7 @@ class TestDigestTab:
         ideas = [_fake_idea("g1", "First"), _fake_idea("g2", "Second")]
         with patch("brandos.tui.app.db.get_ideas_by_status", return_value=ideas), \
              patch("brandos.tui.app.db.get_recent_ideas", return_value=ideas), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]), \
              patch("brandos.tui.app.db.update_status", return_value=True) as mock_update:
             app = DigestApp()
             async with app.run_test() as pilot:
@@ -121,10 +148,254 @@ class TestDigestTab:
                 mock_update.assert_called_once_with("g2", "SKIPPED", platform=None)
 
 
+class TestPostsTab:
+    async def test_shows_copy_pasteable_linkedin_and_x_content_by_default(self):
+        idea = _fake_idea("p1", "Idea one")
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]):
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("2")
+                await pilot.pause()
+                content = str(app.query_one("#posts-content").content)
+                assert "LinkedIn post for Idea one" in content
+                assert "X post for Idea one" in content
+                assert "LinkedIn" in content
+                assert "X" in content
+
+    async def test_platform_filter_linkedin_hides_x_content(self):
+        idea = _fake_idea("p1", "Idea one")
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]):
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("2")
+                await pilot.pause()
+                await pilot.press("p")
+                await pilot.pause()
+                content = str(app.query_one("#posts-content").content)
+                assert "LinkedIn post for Idea one" in content
+                assert "X post for Idea one" not in content
+
+    async def test_platform_filter_x_hides_linkedin_content(self):
+        idea = _fake_idea("p1", "Idea one")
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]):
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("2")
+                await pilot.pause()
+                await pilot.press("p")
+                await pilot.pause()
+                await pilot.press("p")
+                await pilot.pause()
+                content = str(app.query_one("#posts-content").content)
+                assert "X post for Idea one" in content
+                assert "LinkedIn post for Idea one" not in content
+
+    async def test_missing_linkedin_post_shows_placeholder_not_crash(self):
+        idea = _fake_idea("p1", "Idea one")
+        idea["linkedin_post"] = None
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]):
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("2")
+                await pilot.pause()
+                content = str(app.query_one("#posts-content").content)
+                assert "no LinkedIn post generated" in content
+
+    async def test_multi_tweet_thread_split_and_numbered(self):
+        idea = _fake_idea("p1", "Idea one")
+        idea["x_post"] = "First tweet.\n---\nSecond tweet.\n---\nThird tweet."
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]):
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("2")
+                await pilot.pause()
+                content = str(app.query_one("#posts-content").content)
+                assert "First tweet." in content
+                assert "Second tweet." in content
+                assert "Third tweet." in content
+                assert "Tweet 1/3" in content
+                assert "Tweet 2/3" in content
+                assert "Tweet 3/3" in content
+
+    async def test_single_tweet_not_split_or_numbered(self):
+        idea = _fake_idea("p1", "Idea one")
+        idea["x_post"] = "Just one tweet, no thread."
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]):
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("2")
+                await pilot.pause()
+                content = str(app.query_one("#posts-content").content)
+                assert "Just one tweet, no thread." in content
+                assert "Tweet 1/" not in content
+
+    async def test_marking_from_posts_tab_updates_status(self):
+        idea = _fake_idea("p1", "Idea one")
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]), \
+             patch("brandos.tui.app.db.update_status", return_value=True) as mock_update:
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("2")
+                await pilot.pause()
+                await pilot.press("b")
+                await pilot.pause()
+                mock_update.assert_called_once_with("p1", "POSTED_BOTH", platform="BOTH")
+
+
+class TestProjectsTab:
+    async def test_shows_existing_projects(self):
+        projects = [_fake_project("p1", "Existing project")]
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=projects):
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("3")
+                await pilot.pause()
+                headline = app.query_one("#project-headline")
+                assert "Existing project" in str(headline.content)
+
+    async def test_cycle_status_advances_idea_to_building(self):
+        project = _fake_project("p1", "My project", status="IDEA")
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[project]), \
+             patch("brandos.tui.app.db.update_project_status", return_value=True) as mock_update:
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("3")
+                await pilot.pause()
+                await pilot.press("c")
+                await pilot.pause()
+                mock_update.assert_called_once_with("p1", "BUILDING")
+
+    async def test_cycle_status_wraps_from_done_to_idea(self):
+        project = _fake_project("p1", "My project", status="DONE")
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[project]), \
+             patch("brandos.tui.app.db.update_project_status", return_value=True) as mock_update:
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("3")
+                await pilot.pause()
+                await pilot.press("c")
+                await pilot.pause()
+                mock_update.assert_called_once_with("p1", "IDEA")
+
+    async def test_cycle_status_outside_projects_tab_is_noop(self):
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]), \
+             patch("brandos.tui.app.db.update_project_status", return_value=True) as mock_update:
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("c")
+                await pilot.pause()
+                mock_update.assert_not_called()
+
+    async def test_new_project_modal_creates_manual_project(self):
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]), \
+             patch("brandos.tui.app.db.insert_project", return_value="new-id") as mock_insert:
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("3")
+                await pilot.pause()
+                await pilot.press("n")
+                await pilot.pause()
+
+                title_input = app.screen.query_one("#title-input")
+                title_input.value = "My New Project"
+                create_btn = app.screen.query_one("#create-btn")
+                app.screen.on_button_pressed(Button.Pressed(create_btn))
+                await pilot.pause()
+
+                mock_insert.assert_called_once()
+                assert mock_insert.call_args.kwargs["title"] == "My New Project"
+                assert mock_insert.call_args.kwargs["source"] == "MANUAL"
+
+    async def test_new_project_key_outside_projects_tab_is_noop(self):
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]), \
+             patch("brandos.tui.app.db.insert_project", return_value="new-id") as mock_insert:
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("n")
+                await pilot.pause()
+                mock_insert.assert_not_called()
+
+    async def test_suggest_project_from_digest_creates_linked_project(self):
+        from brandos.project_suggester import ProjectSuggestion
+        idea = _fake_idea("i1", "Docker Sandboxes announcement")
+        fake_suggestion = ProjectSuggestion(
+            title="Sandbox Runner CLI",
+            description="A CLI that spins up Docker sandboxes.",
+            category="Developer Tools",
+        )
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]), \
+             patch("brandos.tui.app.suggest_project", return_value=fake_suggestion), \
+             patch("brandos.tui.app.db.insert_project", return_value="new-id") as mock_insert:
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("g")
+                await pilot.pause()
+
+                mock_insert.assert_called_once()
+                call_kwargs = mock_insert.call_args.kwargs
+                assert call_kwargs["title"] == "Sandbox Runner CLI"
+                assert call_kwargs["source"] == "LLM_SUGGESTED"
+                assert call_kwargs["linked_idea_id"] == "i1"
+
+    async def test_suggest_project_failure_surfaces_error_not_crash(self):
+        from brandos.project_suggester import ProjectSuggestionError
+        idea = _fake_idea("i1", "Some idea")
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[idea]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]), \
+             patch("brandos.tui.app.suggest_project", side_effect=ProjectSuggestionError("API down")):
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("g")
+                await pilot.pause()
+                status = app.query_one("#status-bar")
+                assert "API down" in str(status.content)
+
+    async def test_suggest_project_with_nothing_selected_does_not_crash(self):
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]), \
+             patch("brandos.tui.app.db.insert_project", return_value="new-id") as mock_insert:
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("g")
+                await pilot.pause()
+                mock_insert.assert_not_called()
+
+
 class TestPostedTabAndPlatformFilter:
     async def test_platform_cycles_all_linkedin_x(self):
         with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
-             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]):
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]):
             app = DigestApp()
             async with app.run_test() as pilot:
                 await pilot.press("4")
@@ -143,27 +414,27 @@ class TestPostedTabAndPlatformFilter:
                 await pilot.pause()
                 assert app.posted_platform is None
 
-    async def test_platform_cycle_ignored_outside_posted_tab(self):
+    async def test_platform_cycle_ignored_outside_posts_or_posted_tab(self):
         with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
-             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]):
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]):
             app = DigestApp()
             async with app.run_test() as pilot:
-                # still on Digest tab (default)
                 await pilot.press("p")
                 await pilot.pause()
                 assert app.posted_platform is None
 
     async def test_posted_query_receives_platform_filter(self):
         with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]) as mock_query, \
-             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]):
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]):
             app = DigestApp()
             async with app.run_test() as pilot:
                 await pilot.press("4")
                 await pilot.pause()
-                await pilot.press("p")  # -> LINKEDIN
+                await pilot.press("p")
                 await pilot.pause()
 
-                # find the call made for the posted tab specifically
                 posted_calls = [
                     c for c in mock_query.call_args_list
                     if "POSTED_LINKEDIN" in c.args[0]
@@ -176,7 +447,8 @@ class TestPostedTabAndPlatformFilter:
             _fake_idea("p2", "Post yesterday", status="POSTED_X", category="Rust", days_ago=1),
         ]
         with patch("brandos.tui.app.db.get_ideas_by_status", return_value=posted), \
-             patch("brandos.tui.app.db.get_recent_ideas", return_value=posted):
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=posted), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]):
             app = DigestApp()
             async with app.run_test() as pilot:
                 await pilot.press("4")
@@ -190,7 +462,8 @@ class TestPostedTabAndPlatformFilter:
 class TestErrorHandling:
     async def test_db_error_on_digest_load_is_surfaced_not_raised(self):
         with patch("brandos.tui.app.db.get_ideas_by_status", side_effect=Exception("connection refused")), \
-             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]):
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]):
             app = DigestApp()
             async with app.run_test() as pilot:
                 status = app.query_one("#status-bar")
@@ -199,6 +472,7 @@ class TestErrorHandling:
     async def test_marking_with_nothing_selected_does_not_crash(self):
         with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
              patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]), \
              patch("brandos.tui.app.db.update_status", return_value=True) as mock_update:
             app = DigestApp()
             async with app.run_test() as pilot:
@@ -209,6 +483,7 @@ class TestErrorHandling:
     async def test_marking_on_projects_tab_is_a_safe_noop(self):
         with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
              patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]), \
              patch("brandos.tui.app.db.update_status", return_value=True) as mock_update:
             app = DigestApp()
             async with app.run_test() as pilot:
@@ -222,11 +497,13 @@ class TestErrorHandling:
 class TestRefresh:
     async def test_refresh_reloads_all_tabs(self):
         with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]) as mock_query, \
-             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]):
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]) as mock_projects:
             app = DigestApp()
             async with app.run_test() as pilot:
                 initial_calls = mock_query.call_count
+                initial_project_calls = mock_projects.call_count
                 await pilot.press("r")
                 await pilot.pause()
-                # 3 tabs queried again (digest, post_ideas, posted)
                 assert mock_query.call_count == initial_calls + 3
+                assert mock_projects.call_count == initial_project_calls + 1

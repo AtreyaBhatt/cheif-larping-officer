@@ -127,11 +127,15 @@ class TestOpenRouterDigestGenerator:
         articles = [
             Article(title="Rust 2.0 released", url="https://example.com/rust", hn_url="x", score=300, num_comments=100),
         ]
-        fake_json = (
-            '[{"headline": "Rust 2.0 changes everything", "content": "Big release.", '
-            '"category": "Rust", "estimated_quality": 8.5, "reasoning": "High interest", '
-            '"linkedin_angle": "Migration strategy", "x_angle": "Hot take"}]'
-        )
+        fake_json = json.dumps([{
+            "headline": "Rust 2.0 changes everything",
+            "digest_summary": "Major release with big changes.",
+            "linkedin_post": "Rust 2.0 just dropped and it changes how we think about memory safety...",
+            "x_post": "Rust 2.0 is here. The migration story is wild. 🦀",
+            "category": "Rust",
+            "estimated_quality": 8.5,
+            "reasoning": "High interest",
+        }])
         with patch("brandos.digest.requests.post", return_value=self._fake_response(fake_json)):
             ideas = OpenRouterDigestGenerator(max_ideas=5).generate(articles)
 
@@ -139,14 +143,17 @@ class TestOpenRouterDigestGenerator:
         assert ideas[0].headline == "Rust 2.0 changes everything"
         assert ideas[0].category == "Rust"
         assert ideas[0].estimated_quality == 8.5
-        assert "LinkedIn angle" in ideas[0].content
-        assert "X angle" in ideas[0].content
+        assert ideas[0].digest_summary == "Major release with big changes."
+        assert "memory safety" in ideas[0].linkedin_post
+        assert "migration story" in ideas[0].x_post
+        # backward-compat: content mirrors digest_summary
+        assert ideas[0].content == ideas[0].digest_summary
 
     def test_strips_markdown_fences(self):
         articles = [Article(title="Test", url="https://x.com", hn_url="x", score=100, num_comments=5)]
         fenced = (
-            '```json\n[{"headline": "H", "content": "c", "category": "AI", '
-            '"estimated_quality": 7.0, "reasoning": "r", "linkedin_angle": "a", "x_angle": "b"}]\n```'
+            '```json\n[{"headline": "H", "digest_summary": "c", "linkedin_post": "li", '
+            '"x_post": "xp", "category": "AI", "estimated_quality": 7.0, "reasoning": "r"}]\n```'
         )
         with patch("brandos.digest.requests.post", return_value=self._fake_response(fenced)):
             ideas = OpenRouterDigestGenerator(max_ideas=5).generate(articles)
@@ -165,8 +172,8 @@ class TestOpenRouterDigestGenerator:
             for i in range(10)
         ]
         fake_json = json.dumps([
-            {"headline": f"H{i}", "content": "c", "category": "AI", "estimated_quality": 5.0,
-             "reasoning": "r", "linkedin_angle": "a", "x_angle": "b"}
+            {"headline": f"H{i}", "digest_summary": "c", "linkedin_post": "li", "x_post": "xp",
+             "category": "AI", "estimated_quality": 5.0, "reasoning": "r"}
             for i in range(3)
         ])
         with patch("brandos.digest.requests.post", return_value=self._fake_response(fake_json)) as mock_post:
@@ -186,6 +193,45 @@ class TestOpenRouterDigestGenerator:
     def test_default_model_is_free_nemotron(self):
         gen = OpenRouterDigestGenerator()
         assert gen.model == "nvidia/nemotron-3-ultra-550b-a55b:free"
+
+    def test_single_tweet_under_limit_passes_through_unchanged(self):
+        articles = [Article(title="Test", url="https://x.com", hn_url="x", score=100, num_comments=5)]
+        short_tweet = "A" * 200
+        fake_json = json.dumps([{
+            "headline": "H", "digest_summary": "c", "linkedin_post": "li",
+            "x_post": short_tweet, "category": "AI", "estimated_quality": 7.0, "reasoning": "r",
+        }])
+        with patch("brandos.digest.requests.post", return_value=self._fake_response(fake_json)):
+            ideas = OpenRouterDigestGenerator(max_ideas=5).generate(articles)
+        assert ideas[0].x_post == short_tweet
+
+    def test_oversized_tweet_logs_warning_but_still_returns_content(self, caplog):
+        articles = [Article(title="Test", url="https://x.com", hn_url="x", score=100, num_comments=5)]
+        long_tweet = "A" * 350  # over the 280 limit
+        fake_json = json.dumps([{
+            "headline": "H", "digest_summary": "c", "linkedin_post": "li",
+            "x_post": long_tweet, "category": "AI", "estimated_quality": 7.0, "reasoning": "r",
+        }])
+        with patch("brandos.digest.requests.post", return_value=self._fake_response(fake_json)):
+            with caplog.at_level("WARNING"):
+                ideas = OpenRouterDigestGenerator(max_ideas=5).generate(articles)
+        # content is still returned (not silently dropped) so the person can manually trim
+        assert ideas[0].x_post == long_tweet
+        assert "over the" in caplog.text and "limit" in caplog.text
+
+    def test_multi_tweet_thread_each_segment_validated_independently(self, caplog):
+        articles = [Article(title="Test", url="https://x.com", hn_url="x", score=100, num_comments=5)]
+        thread = "First tweet under limit.\n---\n" + ("B" * 300) + "\n---\nThird tweet fine."
+        fake_json = json.dumps([{
+            "headline": "H", "digest_summary": "c", "linkedin_post": "li",
+            "x_post": thread, "category": "AI", "estimated_quality": 7.0, "reasoning": "r",
+        }])
+        with patch("brandos.digest.requests.post", return_value=self._fake_response(fake_json)):
+            with caplog.at_level("WARNING"):
+                ideas = OpenRouterDigestGenerator(max_ideas=5).generate(articles)
+        # only the middle (oversized) segment should trigger a warning
+        assert "2/3" in caplog.text
+        assert ideas[0].x_post == thread
 
 
 class TestGetGenerator:

@@ -102,8 +102,9 @@ def format_digest(ideas: list[ContentIdea]) -> str:
     lines = ["🧠 AI Morning Digest", ""]
     for i, idea in enumerate(ideas, start=1):
         source = idea.source_articles[0] if idea.source_articles else {}
+        summary = idea.digest_summary or idea.content
         lines.append(f"{i}. {idea.headline}")
-        lines.append(f"   {idea.content}")
+        lines.append(f"   {summary}")
         if source.get("url") or source.get("hn_url"):
             lines.append(f"   Source: {source.get('url') or source.get('hn_url')}")
         if idea.category:
