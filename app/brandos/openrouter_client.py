@@ -43,13 +43,17 @@ def call_openrouter_json(
     api_key: str,
     model: str,
     temperature: float = 0.7,
-    timeout: int = 60,
+    timeout: int = 30,
 ) -> list | dict:
     """
     Calls OpenRouter, strips markdown fences from the response, parses
     it as JSON, and returns the parsed structure (list or dict,
     depending on what the prompt asked for). Raises requests.RequestException
-    on network/HTTP failure, or ValueError if the response isn't valid JSON.
+    on network/HTTP failure, or ValueError if the response isn't valid JSON
+    or if OpenRouter returned a 200 with an error payload instead of a
+    completion (e.g. rate-limited, model unavailable) — that shape has
+    no "choices" key, so it's treated as a ValueError rather than
+    letting a raw KeyError escape to the caller.
     """
     resp = requests.post(
         OPENROUTER_URL,
@@ -69,6 +73,21 @@ def call_openrouter_json(
     )
     resp.raise_for_status()
     data = resp.json()
+
+    if "error" in data:
+        # OpenRouter returns HTTP 200 with an {"error": {...}} body for
+        # some failure modes (rate limits, model overloaded/unavailable)
+        # rather than a non-2xx status, so raise_for_status() above
+        # doesn't catch it. Surface the real reason instead of letting
+        # the KeyError below fire on data["choices"].
+        message = data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"])
+        logger.error("OpenRouter returned an error payload: %s", message)
+        raise ValueError(f"OpenRouter API error: {message}")
+
+    if "choices" not in data or not data["choices"]:
+        logger.error("OpenRouter response missing 'choices': %r", data)
+        raise ValueError(f"OpenRouter response had no choices: {data!r}")
+
     raw_response = data["choices"][0]["message"]["content"]
 
     cleaned = strip_markdown_fences(raw_response)
