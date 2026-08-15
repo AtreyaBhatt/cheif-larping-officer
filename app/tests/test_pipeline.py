@@ -166,6 +166,29 @@ class TestOpenRouterDigestGenerator:
             with pytest.raises(ValueError):
                 OpenRouterDigestGenerator(max_ideas=5).generate(articles)
 
+    def test_error_payload_raises_value_error_not_keyerror(self):
+        # OpenRouter can return HTTP 200 with an {"error": ...} body
+        # (rate limit, model unavailable) instead of raising at the
+        # HTTP level. This must not surface as a raw KeyError.
+        from unittest.mock import MagicMock
+        articles = [Article(title="Test", url="https://x.com", hn_url="x", score=100, num_comments=5)]
+        resp = MagicMock()
+        resp.json.return_value = {"error": {"message": "Rate limit exceeded"}}
+        resp.raise_for_status.return_value = None
+        with patch("brandos.digest.requests.post", return_value=resp):
+            with pytest.raises(ValueError, match="Rate limit exceeded"):
+                OpenRouterDigestGenerator(max_ideas=5).generate(articles)
+
+    def test_missing_choices_raises_value_error_not_keyerror(self):
+        from unittest.mock import MagicMock
+        articles = [Article(title="Test", url="https://x.com", hn_url="x", score=100, num_comments=5)]
+        resp = MagicMock()
+        resp.json.return_value = {"unexpected": "shape"}
+        resp.raise_for_status.return_value = None
+        with patch("brandos.digest.requests.post", return_value=resp):
+            with pytest.raises(ValueError, match="no choices"):
+                OpenRouterDigestGenerator(max_ideas=5).generate(articles)
+
     def test_prefilters_to_max_ideas_before_calling_llm(self):
         articles = [
             Article(title=f"Story {i}", url="https://x.com", hn_url="x", score=i, num_comments=0)

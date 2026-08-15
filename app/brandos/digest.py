@@ -195,10 +195,25 @@ class OpenRouterDigestGenerator(DigestGenerator):
                 ],
                 "temperature": 0.7,
             },
-            timeout=60,
+            timeout=30,
         )
         resp.raise_for_status()
         data = resp.json()
+
+        if "error" in data:
+            # OpenRouter returns HTTP 200 with an {"error": {...}} body
+            # for some failure modes (rate limits, model
+            # overloaded/unavailable) rather than a non-2xx status, so
+            # raise_for_status() above doesn't catch it. Surface the
+            # real reason instead of letting a raw KeyError fire below.
+            message = data["error"].get("message", str(data["error"])) if isinstance(data["error"], dict) else str(data["error"])
+            logger.error("OpenRouter returned an error payload: %s", message)
+            raise ValueError(f"OpenRouter API error: {message}")
+
+        if "choices" not in data or not data["choices"]:
+            logger.error("OpenRouter response missing 'choices': %r", data)
+            raise ValueError(f"OpenRouter response had no choices: {data!r}")
+
         return data["choices"][0]["message"]["content"]
 
     @staticmethod
