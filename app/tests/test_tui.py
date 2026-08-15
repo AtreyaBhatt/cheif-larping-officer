@@ -13,6 +13,7 @@ from textual.widgets import Button, TabbedContent
 
 from brandos.tui.app import DigestApp
 from brandos.tui.views import relative_day
+from brandos.weekly_review import WeeklyReview, WeeklyReviewError
 
 
 def _fake_idea(id_, headline, status="GENERATED", category="AI", platform=None, days_ago=0):
@@ -457,6 +458,85 @@ class TestPostedTabAndPlatformFilter:
                 assert "LARP Score" in overall
                 stats = str(app.query_one("#larp-stats").content)
                 assert "Current streak: 2d" in stats
+
+
+class TestWeeklyReview:
+    async def test_shows_prompt_when_no_review_exists_yet(self):
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]), \
+             patch("brandos.tui.app.db.get_weekly_review", return_value=None):
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("4")
+                await pilot.pause()
+                review_text = str(app.query_one("#larp-review").content)
+                assert "press 'w'" in review_text
+
+    async def test_shows_cached_summary_without_generating(self):
+        cached = {"week_start": "2026-08-10", "summary": "You posted twice this week.", "stats_json": {}}
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]), \
+             patch("brandos.tui.app.db.get_weekly_review", return_value=cached), \
+             patch("brandos.tui.app.get_or_generate_weekly_review") as mock_generate:
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("4")
+                await pilot.pause()
+                review_text = str(app.query_one("#larp-review").content)
+                assert "You posted twice this week." in review_text
+                mock_generate.assert_not_called()
+
+    async def test_pressing_w_generates_and_displays_review(self):
+        review = WeeklyReview(week_start="2026-08-10", summary="Solid week, keep it up.", stats={})
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]), \
+             patch("brandos.tui.app.db.get_weekly_review", return_value=None), \
+             patch("brandos.tui.app.get_or_generate_weekly_review", return_value=review) as mock_generate:
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("4")
+                await pilot.pause()
+                await pilot.press("w")
+                await pilot.pause()
+                review_text = str(app.query_one("#larp-review").content)
+                assert "Solid week, keep it up." in review_text
+                mock_generate.assert_called_once()
+
+    async def test_pressing_w_outside_posted_tab_is_noop(self):
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]), \
+             patch("brandos.tui.app.db.get_weekly_review", return_value=None), \
+             patch("brandos.tui.app.get_or_generate_weekly_review") as mock_generate:
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("1")
+                await pilot.pause()
+                await pilot.press("w")
+                await pilot.pause()
+                mock_generate.assert_not_called()
+                status = app.query_one("#status-bar")
+                assert "Posted tab" in str(status.content)
+
+    async def test_weekly_review_error_surfaced_not_raised(self):
+        with patch("brandos.tui.app.db.get_ideas_by_status", return_value=[]), \
+             patch("brandos.tui.app.db.get_recent_ideas", return_value=[]), \
+             patch("brandos.tui.app.db.get_projects", return_value=[]), \
+             patch("brandos.tui.app.db.get_weekly_review", return_value=None), \
+             patch("brandos.tui.app.get_or_generate_weekly_review", side_effect=WeeklyReviewError("no key set")):
+            app = DigestApp()
+            async with app.run_test() as pilot:
+                await pilot.press("4")
+                await pilot.pause()
+                await pilot.press("w")
+                await pilot.pause()
+                status = app.query_one("#status-bar")
+                assert "Weekly review failed" in str(status.content)
+                review_text = str(app.query_one("#larp-review").content)
+                assert "Failed to generate review" in review_text
 
 
 class TestErrorHandling:

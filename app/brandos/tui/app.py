@@ -31,6 +31,7 @@ from brandos.tui.add_project_modal import AddProjectModal, NewProjectData
 from brandos.tui.larp_panel import LarpScorePanel
 from brandos.tui.larp_score import calculate_larp_score
 from brandos.tui.views import IdeaBrowser, PostBrowser, ProjectBrowser
+from brandos.weekly_review import WeeklyReviewError, get_or_generate_weekly_review, week_start_for
 
 DIGEST_STATUSES = ["GENERATED"]
 POSTS_STATUSES = ["GENERATED", "SKIPPED", "ARCHIVED"]  # posts not yet posted or set aside
@@ -58,6 +59,9 @@ class DigestApp(App):
                        selected Digest/Posts idea
       c                cycle selected project's status (Projects tab only:
                        IDEA -> BUILDING -> DONE)
+      w                show this week's review (Posted tab only);
+                       generates it via LLM the first time, then reads
+                       the cached copy on every later press/refresh
       r                refresh all tabs from DB
       q                quit
     """
@@ -97,6 +101,7 @@ class DigestApp(App):
         Binding("n", "new_project", "New Project"),
         Binding("g", "suggest_project", "Suggest Project"),
         Binding("c", "cycle_project_status", "Cycle Status"),
+        Binding("w", "weekly_review", "Weekly Review"),
         Binding("r", "refresh_all", "Refresh"),
         Binding("q", "quit", "Quit"),
     ]
@@ -201,7 +206,30 @@ class DigestApp(App):
         except Exception:
             all_ideas = []
         score = calculate_larp_score(all_ideas)
-        self.query_one("#larp-panel", LarpScorePanel).update_score(score)
+        panel = self.query_one("#larp-panel", LarpScorePanel)
+        panel.update_score(score)
+        self._show_cached_review_if_any(panel)
+
+    def _show_cached_review_if_any(self, panel: LarpScorePanel) -> None:
+        """
+        Called on every refresh of the Posted tab. Only reads the
+        already-stored review for the current week (no LLM call) — if
+        nothing has been generated yet, prompts the user to press 'w'
+        rather than generating automatically, since generation costs an
+        LLM call and should stay an explicit action.
+        """
+        from datetime import date
+
+        try:
+            existing = db.get_weekly_review(week_start_for(date.today()))
+        except Exception:
+            # Don't let a review-lookup failure clobber the score panel;
+            # weekly review is supplementary, not core to the Posted tab.
+            return
+        if existing is None:
+            panel.update_review("\n[dim]No review yet for this week — press 'w' to generate one.[/dim]")
+        else:
+            panel.update_review(f"\n[bold]This week's review:[/bold]\n{existing['summary']}")
 
     def _update_platform_indicator(self) -> None:
         tabs = self.query_one(TabbedContent)
@@ -362,6 +390,26 @@ class DigestApp(App):
 
         self._set_status(f"Added suggested project '{suggestion.title}' (linked to this idea)")
         self.refresh_all_tabs()
+
+    def action_weekly_review(self) -> None:
+        tabs = self.query_one(TabbedContent)
+        if tabs.active != "posted":
+            self._set_status("Weekly review lives on the Posted tab — press '4' then 'w'")
+            return
+
+        panel = self.query_one("#larp-panel", LarpScorePanel)
+        self._set_status("Generating this week's review...")
+        panel.update_review("\n[dim]Generating this week's review...[/dim]")
+
+        try:
+            review = get_or_generate_weekly_review()
+        except WeeklyReviewError as e:
+            self._set_status(f"[red]Weekly review failed: {e}[/red]")
+            panel.update_review(f"\n[red]Failed to generate review: {e}[/red]")
+            return
+
+        panel.update_review(f"\n[bold]This week's review:[/bold]\n{review.summary}")
+        self._set_status("Weekly review ready")
 
     def action_cycle_project_status(self) -> None:
         tabs = self.query_one(TabbedContent)

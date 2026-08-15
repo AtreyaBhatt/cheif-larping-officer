@@ -41,6 +41,17 @@ class LarpScorePanel(Vertical):
         yield Static("", id="larp-overall")
         yield Static("", id="larp-breakdown")
         yield Static("", id="larp-stats")
+        yield Static("", id="larp-review")
+
+    def update_review(self, message: str) -> None:
+        """
+        Renders the weekly review section: either the coaching summary
+        text, a loading/error message, or a prompt to generate one.
+        Kept as free text (not a WeeklyReview object) so this widget
+        doesn't need to know about the weekly_review module's types —
+        the app formats the message, this just displays it.
+        """
+        self.query_one("#larp-review", Static).update(message)
 
     def update_score(self, score: LarpScore) -> None:
         overall_color = _score_color(score.overall)

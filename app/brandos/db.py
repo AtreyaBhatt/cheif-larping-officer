@@ -331,3 +331,49 @@ def delete_project(project_id: str) -> bool:
             deleted = cur.rowcount > 0
             logger.info("delete_project id=%s deleted=%s", project_id, deleted)
             return deleted
+
+
+# --- Weekly reviews -----------------------------------------------------
+#
+# One row per ISO week (week_start = that week's Monday), generated
+# on-demand from the TUI and cached — see brandos/weekly_review.py and
+# db/migrations/004_create_weekly_reviews.sql.
+
+def get_weekly_review(week_start) -> dict | None:
+    """
+    week_start: a date (the Monday of the ISO week). Returns the stored
+    review row for that week, or None if it hasn't been generated yet.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, created_at, week_start, summary, stats_json
+                FROM weekly_reviews
+                WHERE week_start = %s;
+                """,
+                (week_start,),
+            )
+            return cur.fetchone()
+
+
+def insert_weekly_review(week_start, summary: str, stats: dict) -> str:
+    """
+    Insert a newly generated review. week_start must be unique (enforced
+    at the DB level) — the caller (weekly_review.py) is responsible for
+    checking get_weekly_review() first to avoid an unnecessary LLM call
+    followed by a failed insert.
+    """
+    with get_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO weekly_reviews (week_start, summary, stats_json)
+                VALUES (%s, %s, %s)
+                RETURNING id;
+                """,
+                (week_start, summary, json.dumps(stats)),
+            )
+            row = cur.fetchone()
+            logger.info("Inserted weekly_review id=%s week_start=%s", row["id"], week_start)
+            return str(row["id"])
